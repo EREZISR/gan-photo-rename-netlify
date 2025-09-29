@@ -1,0 +1,9 @@
+{
+  "name": "gan-photo-rename",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "archiver": "^6.0.1",
+    "lambda-multipart-parser": "^1.0.1"
+  }
+}
