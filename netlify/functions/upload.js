@@ -1,67 +1,65 @@
 // Netlify Function: מקבל קבצים + שמות (אם נשלחו), יוצר ZIP, מעלה ל-file.io ומחזיר לינק הורדה.
 import archiver from 'archiver';
 import multipart from 'lambda-multipart-parser';
+import FormData from 'form-data'; // ← חשוב: FormData ל-Node
 
 export const handler = async (event) => {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return json(405, { error: 'Method Not Allowed' });
   }
 
   try {
     const ct = (event.headers['content-type'] || event.headers['Content-Type'] || '').toLowerCase();
     if (!ct.startsWith('multipart/form-data')) {
-      return { statusCode: 400, body: 'Expected multipart/form-data' };
+      return json(400, { error: 'Expected multipart/form-data' });
     }
 
-    // פרסר מולטי-פארט
     const parsed = await multipart.parse(event);
     const files = parsed.files || [];
-    if (!files.length) return { statusCode: 400, body: 'No files' };
+    if (!files.length) return json(400, { error: 'No files' });
 
-    // --- קבלת שמות בצורה סופר-סלחנית ---
+    // קבלת שמות בצורה סלחנית
     let names = [];
-
-    // 1) names[] מרובים
     if (parsed.multiValueFields && parsed.multiValueFields['names[]']) {
       names = parsed.multiValueFields['names[]'];
     } else if (parsed.fields && parsed.fields['names[]']) {
       names = Array.isArray(parsed.fields['names[]']) ? parsed.fields['names[]'] : [parsed.fields['names[]']];
-    }
-    // 2) names כ-JSON (מחרוזת)
-    else if (parsed.fields && parsed.fields.names) {
+    } else if (parsed.fields && parsed.fields.names) {
       try { names = JSON.parse(parsed.fields.names); } catch { names = []; }
     }
-
-    // 3) אם לא התקבלו שמות תואמים – נופלים חזרה לשמות הקבצים שהגיעו מהדפדפן
     if (!names.length || names.length !== files.length) {
-      names = files.map((f, i) => {
-        const base = sanitize(f.filename || `image_${i+1}`);
-        return base || `image_${i+1}.jpg`;
-      });
+      names = files.map((f, i) => sanitize(f.filename || `image_${i+1}.jpg`));
     }
 
-    // בניית ZIP בזיכרון
+    // בנה ZIP בזיכרון (Buffer)
     const zipBuffer = await makeZipBuffer(files, names);
 
-    // העלאה ל-file.io (לינק חד-פעמי; אפשר להחליף ל-?expires=1d)
-    const form = new FormData();
-    form.append('file', new Blob([zipBuffer], { type: 'application/zip' }), 'gan_photos.zip');
-
-    const resp = await fetch('https://file.io/?auto=1', { method: 'POST', body: form });
-    if (!resp.ok) throw new Error(await resp.text());
+    // העלאה ל-file.io עם form-data של Node
+    const fd = new FormData();
+    fd.append('file', zipBuffer, { filename: 'gan_photos.zip', contentType: 'application/zip' });
+    // לינק חד-פעמי; אפשר להחליף ל-?expires=1d כדי לפוג אחרי יום
+    const resp = await fetch('https://file.io/?auto=1', { method: 'POST', body: fd, headers: fd.getHeaders() });
+    if (!resp.ok) {
+      const txt = await resp.text();
+      return json(502, { error: 'file.io upload failed', details: txt });
+    }
     const data = await resp.json();
-    if (!data?.link) throw new Error('file.io: no link');
+    if (!data?.link) return json(502, { error: 'file.io: no link in response', raw: data });
 
-    return {
-      statusCode: 200,
-      headers: { 'content-type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ url: data.link })
-    };
+    return json(200, { url: data.link });
   } catch (err) {
-    console.error(err);
-    return { statusCode: 500, body: 'Server error: ' + err.message };
+    return json(500, { error: 'Server error', message: err.message });
   }
 };
+
+// ------- helpers -------
+function json(status, obj) {
+  return {
+    statusCode: status,
+    headers: { 'content-type': 'application/json; charset=utf-8' },
+    body: JSON.stringify(obj)
+  };
+}
 
 function sanitize(s) {
   return (s || '').trim()
@@ -77,13 +75,11 @@ function makeZipBuffer(files, names) {
     archive.on('error', reject);
     archive.on('data', (d) => chunks.push(d));
     archive.on('end', () => resolve(Buffer.concat(chunks)));
-
     files.forEach((f, i) => {
       const fname = sanitize(names[i] || f.filename || `image_${i+1}.jpg`);
       const buf = Buffer.from(f.content, 'base64'); // parser מחזיר base64
       archive.append(buf, { name: fname });
     });
-
     archive.finalize();
   });
 }
