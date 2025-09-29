@@ -6,34 +6,40 @@
   <title>שינוי שמות לתמונות – גן</title>
   <style>
     body{font-family:system-ui,Arial,sans-serif;margin:16px}
-    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    h2{margin:0 0 8px}
+    .row{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap;align-items:center}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:8px}
     .card{border:1px solid #e5e5e5;border-radius:12px;padding:12px}
     .thumb{width:100%;height:160px;object-fit:cover;border-radius:10px;background:#f5f5f5}
-    .row{display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap}
-    input[type="text"]{flex:1;padding:6px 8px;border:1px solid #ccc;border-radius:8px}
+    input[type="text"]{flex:1;padding:8px;border:1px solid #ccc;border-radius:8px}
     button{padding:10px 14px;border:none;border-radius:10px;cursor:pointer;background:#2563eb;color:#fff}
     small{color:#666}
+    .error{border-color:#dc2626; box-shadow:0 0 0 2px #fecaca}
+    #status{min-height:24px}
+    .pill{padding:6px 10px;border-radius:999px;background:#f1f5f9}
   </style>
 </head>
 <body>
   <h2>🧒 שינוי שמות לתמונות – גן</h2>
+
   <div class="row">
     <label>שם הגן/תאריך:
-      <input id="prefix" type="text" placeholder="למשל: גן חצב 2025-09-30">
+      <input id="prefix" type="text" placeholder="(אופציונלי) למשל: גן חצב 2025-09-30">
     </label>
     <input id="fileInput" type="file" accept="image/*" multiple>
-    <button onclick="autoSuggest()">הצעת שמות</button>
+    <button onclick="autoSuggest()">הצעת שמות (לא חובה)</button>
+    <span id="counter" class="pill"></span>
   </div>
 
   <div id="grid" class="grid"></div>
 
-  <div class="row" style="margin-top:12px">
+  <div class="row">
     <button onclick="send()">שליחה ליצירת לינק הורדה</button>
     <span id="status"></span>
   </div>
 
 <script>
-let items = []; // [{file, url, name, ext}]
+let items = []; // [{file,url,name,ext}]
 
 document.getElementById('fileInput').addEventListener('change', e => {
   items = [];
@@ -41,7 +47,7 @@ document.getElementById('fileInput').addEventListener('change', e => {
   for (const f of files) {
     const ext = (f.name.match(/(\.[^.]+)$/) || [''])[0] || '';
     const url = URL.createObjectURL(f);
-    items.push({ file: f, url, name: f.name.replace(/\.[^.]+$/, ''), ext });
+    items.push({ file: f, url, name: '', ext }); // ← ריק כברירת־מחדל
   }
   render();
 });
@@ -50,10 +56,9 @@ function autoSuggest() {
   const prefix = (document.getElementById('prefix').value || '').trim();
   let n = 1;
   items.forEach(it => {
-    const base = it.name || 'תמונה';
-    let nm = base;
-    if (prefix) nm = `${prefix} - ${nm}`;
-    nm = `${nm} - ${String(n).padStart(3,'0')}`;
+    let nm = '';
+    if (prefix) nm = `${prefix} - `;
+    nm += String(n).padStart(3,'0'); // שמות קצרים אם רוצים
     it.name = nm;
     n++;
   });
@@ -62,28 +67,74 @@ function autoSuggest() {
 
 function render() {
   const grid = document.getElementById('grid');
+  const counter = document.getElementById('counter');
   grid.innerHTML = '';
+  let missing = 0;
+
   items.forEach((it, i) => {
+    if (!it.name.trim()) missing++;
     const div = document.createElement('div');
     div.className = 'card';
     div.innerHTML = `
       <img class="thumb" src="${it.url}">
       <div class="row">
-        <input type="text" value="${it.name}" oninput="items[${i}].name=this.value">
+        <input id="nm_${i}" type="text" value="${it.name}" placeholder="הקלד/י שם לתמונה">
       </div>
       <small>${it.file.name}</small>
     `;
     grid.appendChild(div);
+    const input = div.querySelector('input');
+    input.addEventListener('input', (e) => {
+      items[i].name = e.target.value;
+      e.target.classList.remove('error');
+      updateCounter();
+    });
   });
+
+  updateCounter();
+  function updateCounter(){
+    const m = items.filter(x => !(x.name||'').trim()).length;
+    counter.textContent = items.length ? (m ? `חסרות ${m} תמונות עם שם` : 'הכל מלא בשמות ✅') : '';
+  }
+}
+
+function focusFirstMissing(){
+  for (let i=0;i<items.length;i++){
+    if (!(items[i].name||'').trim()){
+      const el = document.getElementById('nm_'+i);
+      if (el){
+        el.classList.add('error');
+        el.scrollIntoView({behavior:'smooth', block:'center'});
+        el.focus();
+      }
+      return i;
+    }
+  }
+  return -1;
 }
 
 async function send() {
-  if (!items.length) return;
   const status = document.getElementById('status');
+  if (!items.length) { status.textContent = 'לא נבחרו קבצים'; return; }
+
+  // בדיקה: כל השמות מולאו
+  const missingIdx = focusFirstMissing();
+  if (missingIdx !== -1) {
+    status.textContent = `יש תמונה בלי שם. קפצתי לשורה ${missingIdx+1}.`;
+    return;
+  }
+
   status.textContent = 'מעלה ומכין ZIP...';
   const fd = new FormData();
-  fd.append('names', JSON.stringify(items.map(it => (it.name || 'תמונה') + (it.ext || ''))));
+
+  // שולחים שמות גם כ-names[] וגם כ-JSON ("names") – יעבוד עם הפונקציה הנוכחית שלך.
+  const namesArray = items.map(it => (it.name || 'תמונה') + (it.ext || ''));
+  namesArray.forEach(nm => fd.append('names[]', nm));
+  fd.append('names', JSON.stringify(namesArray));
+
+  // הקבצים עצמם
   items.forEach((it, i) => fd.append('file'+i, it.file, it.file.name));
+
   try {
     const res = await fetch('/.netlify/functions/upload', { method: 'POST', body: fd });
     if (!res.ok) throw new Error(await res.text());
